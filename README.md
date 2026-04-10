@@ -20,6 +20,8 @@ The model was trained using the [Rock Paper Scissors Dataset](https://www.kaggle
 * **Deep Learning:** TensorFlow / Keras
 * **Version Control:** Git
 
+* To play press **space** to start and press **Q** to exit.
+
 ## ⚙️ Installation & Setup
 
 1. **Clone the repository:**
