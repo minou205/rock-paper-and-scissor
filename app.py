@@ -1,64 +1,37 @@
-"""
-app.py  –  Rock · Paper · Scissors  Web Edition  (HTTPS)
-=========================================================
-Generates a self-signed TLS certificate automatically so the browser
-allows camera access on every device on the same WiFi.
-
-First-time visitors will see "Your connection is not private" — they must
-click  Advanced → Proceed to <ip> (unsafe)  once, then camera works fine.
-
-Install:
-    pip install flask flask-socketio eventlet opencv-python tensorflow keras
-    pip install cryptography zeroconf qrcode pillow
-
-Run:
-    python app.py
-"""
-
-import base64, time, socket, threading, os, ssl
+import base64,time,socket,threading,os,ssl
 import numpy as np
 import cv2
 from pathlib import Path
-from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask import Flask,render_template,request
+from flask_socketio import SocketIO,emit,join_room,leave_room
 from keras.models import load_model
 from keras.applications.mobilenet_v2 import preprocess_input
 
-# ── Config ────────────────────────────────────────────────────────────────────
-MODEL_PATH = "rps_model_v2.keras"
-CLASSES    = ["rock", "paper", "scissors"]
-IMG_SIZE   = (224, 224)
-CONF_MIN   = 0.60
-PORT       = 5443          # HTTPS — no admin rights needed (vs port 443)
-CERT_FILE  = "cert.pem"
-KEY_FILE   = "key.pem"
+MODEL_PATH="rps_model_v2.keras"
+CLASSES=["rock","paper","scissors"]
+IMG_SIZE=(224,224)
+CONF_MIN=0.60
+PORT=5443
+CERT_FILE="cert.pem"
+KEY_FILE="key.pem"
 
-SKIN_LOWER = np.array([0,   133,  77], dtype=np.uint8)
-SKIN_UPPER = np.array([255, 173, 127], dtype=np.uint8)
-MIN_AREA   = 4000
-_KERN      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+SKIN_LOWER=np.array([0,133,77],dtype=np.uint8)
+SKIN_UPPER=np.array([255,173,127],dtype=np.uint8)
+MIN_AREA=4000
+_KERN=cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(9,9))
 
-# ── Flask & SocketIO ──────────────────────────────────────────────────────────
-app      = Flask(__name__, template_folder="templates")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
-                    max_http_buffer_size=8 * 1024 * 1024)
-
-# ── Model ─────────────────────────────────────────────────────────────────────
+app=Flask(__name__,template_folder="templates")
+socketio=SocketIO(app,cors_allowed_origins="*",async_mode="threading",max_http_buffer_size=8*1024*1024)
 print("⏳  Loading model …")
 model = load_model(MODEL_PATH)
 print(f"✅  {MODEL_PATH} ready\n")
-
-# ── Room store ────────────────────────────────────────────────────────────────
-rooms: dict[str, list[dict]] = {}
-_lock = threading.Lock()
-
-
-# ── TLS: auto-generate self-signed cert ───────────────────────────────────────
+rooms:dict[str, list[dict]]={}
+_lock=threading.Lock()
 
 def get_local_ip() -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))
+        s.connect(("8.8.8.8",80))
         return s.getsockname()[0]
     except Exception:
         return "127.0.0.1"
@@ -67,7 +40,6 @@ def get_local_ip() -> str:
 
 
 def generate_cert(ip: str):
-    """Create cert.pem + key.pem valid for the machine's LAN IP."""
     try:
         from cryptography import x509
         from cryptography.x509.oid import NameOID
@@ -75,14 +47,14 @@ def generate_cert(ip: str):
         from cryptography.hazmat.primitives.asymmetric import rsa
         import ipaddress, datetime
     except ImportError:
-        print("❌  'cryptography' not installed.\n    Run: pip install cryptography")
+        print("❌  'cryptography' not installed.\n\tRun: pip install cryptography")
         raise SystemExit(1)
 
     print(f"🔐  Generating self-signed certificate for {ip} …")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, ip),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "RPS Game"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME,"RPS Game"),
     ])
     cert = (
         x509.CertificateBuilder()
@@ -90,7 +62,7 @@ def generate_cert(ip: str):
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(datetime.datetime.utcnow())
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+        .not_valid_after(datetime.datetime.utcnow()+datetime.timedelta(days=3650))
         .add_extension(
             x509.SubjectAlternativeName([
                 x509.IPAddress(ipaddress.IPv4Address(ip)),
@@ -101,82 +73,74 @@ def generate_cert(ip: str):
     )
     Path(CERT_FILE).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     Path(KEY_FILE).write_bytes(
-        key.private_bytes(serialization.Encoding.PEM,
-                          serialization.PrivateFormat.TraditionalOpenSSL,
-                          serialization.NoEncryption()))
+        key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.TraditionalOpenSSL,serialization.NoEncryption()))
     print(f"✅  Certificate saved ({CERT_FILE} / {KEY_FILE})\n")
 
 
 def cert_matches_ip(ip: str) -> bool:
     try:
         from cryptography import x509
-        cert = x509.load_pem_x509_certificate(Path(CERT_FILE).read_bytes())
-        san  = cert.extensions.get_extension_for_class(
+        cert=x509.load_pem_x509_certificate(Path(CERT_FILE).read_bytes())
+        san=cert.extensions.get_extension_for_class(
             x509.SubjectAlternativeName).value
         return ip in [str(i) for i in san.get_values_for_type(x509.IPAddress)]
     except Exception:
         return False
 
 
-# ── Vision helpers ─────────────────────────────────────────────────────────────
-
 def decode_frame(b64: str):
     try:
         _, data = b64.split(",", 1)
-        buf = np.frombuffer(base64.b64decode(data), np.uint8)
-        return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        buf=np.frombuffer(base64.b64decode(data),np.uint8)
+        return cv2.imdecode(buf,cv2.IMREAD_COLOR)
     except Exception:
         return None
 
-
 def classify(frame: np.ndarray):
-    H, W = frame.shape[:2]
-    ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
-    mask  = cv2.inRange(ycrcb, SKIN_LOWER, SKIN_UPPER)
-    mask  = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  _KERN)
-    mask  = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _KERN)
-    mask  = cv2.dilate(mask, _KERN, iterations=1)
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    H,W = frame.shape[:2]
+    ycrcb=cv2.cvtColor(frame,cv2.COLOR_BGR2YCrCb)
+    mask=cv2.inRange(ycrcb, SKIN_LOWER, SKIN_UPPER)
+    mask=cv2.morphologyEx(mask,cv2.MORPH_OPEN,_KERN)
+    mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,_KERN)
+    mask=cv2.dilate(mask,_KERN,iterations=1)
+    cnts,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return None, 0.0
-    lg = max(cnts, key=cv2.contourArea)
+    lg=max(cnts, key=cv2.contourArea)
     if cv2.contourArea(lg) < MIN_AREA:
         return None, 0.0
-    x, y, bw, bh = cv2.boundingRect(lg)
-    p = int(max(bw, bh) * .20)
-    x1,y1 = max(0,x-p), max(0,y-p)
-    x2,y2 = min(W,x+bw+p), min(H,y+bh+p)
-    crop = frame[y1:y2, x1:x2]
+    x,y,bw,bh = cv2.boundingRect(lg)
+    p= int(max(bw, bh) * .20)
+    x1,y1= max(0,x-p), max(0,y-p)
+    x2,y2= min(W,x+bw+p), min(H,y+bh+p)
+    crop=frame[y1:y2, x1:x2]
     if crop.size == 0:
-        return None, 0.0
-    ch, cw = crop.shape[:2]
-    side   = max(ch, cw)
-    canvas = np.zeros((side, side, 3), dtype=np.uint8)
-    canvas[(side-ch)//2:(side-ch)//2+ch,
-           (side-cw)//2:(side-cw)//2+cw] = crop
-    rgb    = cv2.cvtColor(cv2.resize(canvas, IMG_SIZE), cv2.COLOR_BGR2RGB)
-    tensor = preprocess_input(rgb.astype("float32"))
-    probs  = model.predict(np.expand_dims(tensor, 0), verbose=0)[0]
-    idx    = int(np.argmax(probs))
-    conf   = float(probs[idx])
-    return (CLASSES[idx] if conf >= CONF_MIN else None), conf
+        return None,0.0
+    ch,cw = crop.shape[:2]
+    side= max(ch, cw)
+    canvas= np.zeros((side, side, 3), dtype=np.uint8)
+    canvas[(side-ch)//2:(side-ch)//2+ch,(side-cw)//2:(side-cw)//2+cw]=crop
+    rgb= cv2.cvtColor(cv2.resize(canvas, IMG_SIZE), cv2.COLOR_BGR2RGB)
+    tensor= preprocess_input(rgb.astype("float32"))
+    probs=model.predict(np.expand_dims(tensor, 0), verbose=0)[0]
+    idx=int(np.argmax(probs))
+    conf=float(probs[idx])
+    return (CLASSES[idx] if conf >= CONF_MIN else None),conf
 
 
 def encode_frame(frame: np.ndarray) -> str:
-    small = cv2.resize(frame, (320, 240))
-    _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 55])
-    return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+    small = cv2.resize(frame,(320,240))
+    _, buf = cv2.imencode(".jpg",small,[cv2.IMWRITE_JPEG_QUALITY,55])
+    return "data:image/jpeg;base64,"+base64.b64encode(buf).decode()
 
 
 def decide(g1, g2) -> int:
-    if g1 is None and g2 is None: return -1
-    if g1 is None: return 2
-    if g2 is None: return 1
-    if g1 == g2:   return 0
+    if g1 is None and g2 is None:return-1
+    if g1 is None:return 2
+    if g2 is None:return 1
+    if g1 == g2:return 0
     return 1 if (g1, g2) in {("rock","scissors"),("scissors","paper"),("paper","rock")} else 2
 
-
-# ── Room helpers ───────────────────────────────────────────────────────────────
 
 def room_of(sid):
     with _lock:
@@ -194,14 +158,10 @@ def other(room_id, sid):
     return None
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def index():
     return render_template("index.html")
 
-
-# ── Socket events ──────────────────────────────────────────────────────────────
 
 @socketio.on("connect")
 def on_connect():
@@ -225,10 +185,10 @@ def on_disconnect():
 
 @socketio.on("join")
 def on_join(data):
-    username = (data.get("username") or "Player").strip()
-    room_id  = (data.get("room")     or "").strip()
+    username=(data.get("username") or "Player").strip()
+    room_id=(data.get("room") or "").strip()
     if not room_id:
-        emit("error", {"msg": "Room ID cannot be empty."}); return
+        emit("error",{"msg":"Room ID cannot be empty."}); return
 
     join_room(room_id)
     with _lock:
@@ -237,8 +197,8 @@ def on_join(data):
         if len(rooms[room_id]) >= 2:
             emit("error", {"msg": "Room is full."}); leave_room(room_id); return
         rooms[room_id].append({"sid": request.sid, "username": username})
-        count   = len(rooms[room_id])
-        players = list(rooms[room_id])
+        count= len(rooms[room_id])
+        players=list(rooms[room_id])
 
     print(f"[room {room_id}] {username} ({count}/2)")
 
