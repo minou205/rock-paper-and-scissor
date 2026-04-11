@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>RPS · AI Battle</title>
+<!-- socket.io loaded from the server itself so no external CDN needed over HTTPS -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --p1:    #1e90ff;
+  --p2:    #ff4560;
+  --gold:  #ffd700;
+  --green: #00e676;
+  --bg:    #08090d;
+  --panel: #0f1117;
+  --bdr:   #1f2333;
+  --txt:   #e8eaf0;
+  --mute:  #50566a;
+  --fh:    'Orbitron', monospace;
+  --fm:    'Share Tech Mono', monospace;
+}
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--txt); font-family: var(--fm); }
+
+/* scanline */
+body::after {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:9999;
+  background: repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);
+}
+
+/* layout */
+#app { display:flex; flex-direction:column; height:100vh; }
+
+/* topbar */
+#topbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 18px; height:56px; flex-shrink:0;
+  background:var(--panel); border-bottom:1px solid var(--bdr); position:relative;
+}
+.title { font-family:var(--fh); font-size:.72rem; font-weight:900; letter-spacing:.22em;
+  color:var(--gold); position:absolute; left:50%; transform:translateX(-50%); white-space:nowrap; }
+.sc-block { display:flex; align-items:baseline; gap:8px; }
+.sc-name  { font-size:.65rem; letter-spacing:.12em; color:var(--mute); }
+.sc-num   { font-family:var(--fh); font-size:1.55rem; font-weight:700; }
+.sc-num.p1 { color:var(--p1); } .sc-num.p2 { color:var(--p2); }
+
+/* arena */
+#arena { flex:1; display:grid; grid-template-columns:1fr 3px 1fr; overflow:hidden; position:relative; }
+.divider { background:var(--bdr); position:relative; }
+.divider::after {
+  content:'VS'; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  background:var(--bg); border:1px solid var(--bdr); font-family:var(--fh);
+  font-size:.55rem; font-weight:700; color:var(--mute); padding:4px 5px; border-radius:3px;
+}
+.panel { position:relative; overflow:hidden; background:#000; }
+
+/* video */
+video, #remoteImg {
+  width:100%; height:100%; object-fit:cover; display:block;
+}
+#remoteImg { position:absolute; inset:0; display:none; }
+
+/* player tag */
+.ptag {
+  position:absolute; top:10px; left:10px; font-family:var(--fh); font-size:.6rem;
+  font-weight:700; letter-spacing:.14em; padding:3px 10px; border-radius:3px;
+  backdrop-filter:blur(6px);
+}
+.ptag.p1 { color:var(--p1); border:1px solid var(--p1); background:rgba(30,144,255,.12); }
+.ptag.p2 { color:var(--p2); border:1px solid var(--p2); background:rgba(255,69,96,.12); }
+
+/* gesture */
+.gbadge {
+  position:absolute; bottom:50px; left:50%; transform:translateX(-50%);
+  font-family:var(--fh); font-size:1rem; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; padding:5px 16px; border-radius:4px; white-space:nowrap;
+  transition:all .12s;
+}
+.gbadge.p1 { color:var(--p1); border:1px solid var(--p1); background:rgba(30,144,255,.15); }
+.gbadge.p2 { color:var(--p2); border:1px solid var(--p2); background:rgba(255,69,96,.15); }
+.gbadge.none { color:var(--mute); border-color:var(--bdr); background:transparent; font-size:.72rem; }
+
+/* conf bar */
+.cbar-wrap { position:absolute; bottom:34px; left:10px; right:10px; height:3px; background:var(--bdr); border-radius:2px; }
+.cbar { height:100%; border-radius:2px; transition:width .18s; }
+.cbar.p1 { background:var(--p1); } .cbar.p2 { background:var(--p2); }
+
+/* remote placeholder */
+.rph {
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:10px;
+  color:var(--mute); font-size:.7rem; letter-spacing:.1em;
+}
+.rph svg { opacity:.25; }
+
+/* statusbar */
+#statusbar {
+  height:34px; flex-shrink:0; display:flex; align-items:center;
+  justify-content:center; gap:24px;
+  background:var(--panel); border-top:1px solid var(--bdr);
+  font-size:.6rem; letter-spacing:.1em; color:var(--mute);
+}
+#statusbar span { display:flex; align-items:center; gap:5px; }
+kbd { background:var(--bdr); color:var(--txt); border-radius:3px; padding:1px 5px;
+  font-family:var(--fm); font-size:.58rem; }
+
+/* overlay */
+#overlay {
+  position:absolute; inset:0; z-index:100;
+  display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(3px); background:rgba(8,9,13,.6);
+  transition:opacity .2s;
+}
+#overlay.hidden { opacity:0; pointer-events:none; }
+.obox {
+  text-align:center; padding:32px 44px;
+  background:rgba(15,17,23,.95); border:1px solid var(--bdr);
+  border-radius:8px; max-width:520px; width:90%;
+}
+.otitle { font-family:var(--fh); font-size:.9rem; font-weight:900;
+  letter-spacing:.18em; color:var(--gold); margin-bottom:22px; }
+
+/* form */
+.frow { display:flex; flex-direction:column; gap:5px; margin-bottom:13px; text-align:left; }
+.frow label { font-size:.6rem; letter-spacing:.1em; color:var(--mute); }
+.frow input {
+  background:#12141c; border:1px solid var(--bdr); border-radius:4px;
+  color:var(--txt); font-family:var(--fm); font-size:.88rem;
+  padding:10px 13px; outline:none; transition:border-color .12s;
+}
+.frow input:focus { border-color:var(--p1); }
+.btn {
+  margin-top:8px; width:100%; padding:12px;
+  background:var(--p1); border:none; border-radius:4px;
+  color:#fff; font-family:var(--fh); font-size:.7rem;
+  font-weight:700; letter-spacing:.15em; cursor:pointer; transition:opacity .12s;
+}
+.btn:hover { opacity:.85; }
+#errmsg { font-size:.68rem; color:#e57; margin-top:10px; min-height:1em; }
+
+/* waiting */
+.pulse { animation:pulse 1.3s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+
+/* countdown */
+#cdNum {
+  font-family:var(--fh); font-size:8rem; font-weight:900; line-height:1;
+  color:var(--gold); text-shadow:0 0 50px rgba(255,215,0,.5);
+  animation:cpulse 1s ease-in-out infinite;
+}
+@keyframes cpulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.07)} }
+#cdLbl { font-family:var(--fh); font-size:.65rem; letter-spacing:.25em; color:var(--mute); margin-top:6px; }
+
+/* shoot */
+#shootTxt {
+  font-family:var(--fh); font-size:4.5rem; font-weight:900;
+  color:var(--green); letter-spacing:.2em;
+  text-shadow:0 0 60px rgba(0,230,118,.6);
+  animation:sflash .12s ease-in-out 3;
+}
+@keyframes sflash { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+/* verdict */
+#vMsg { font-family:var(--fh); font-size:1.55rem; font-weight:900; letter-spacing:.1em; }
+#vSub { font-size:.7rem; color:var(--mute); margin-top:8px; letter-spacing:.08em; }
+#againBtn {
+  margin-top:18px; padding:9px 28px; background:transparent;
+  border:1px solid var(--gold); color:var(--gold); font-family:var(--fh);
+  font-size:.62rem; font-weight:700; letter-spacing:.18em;
+  border-radius:4px; cursor:pointer; transition:background .12s;
+}
+#againBtn:hover { background:rgba(255,215,0,.1); }
+
+/* opp-left */
+#oppLeft {
+  display:none; position:absolute; inset:0; z-index:200;
+  flex-direction:column; align-items:center; justify-content:center; gap:14px;
+  background:rgba(8,9,13,.88); font-family:var(--fh);
+  font-size:.95rem; color:var(--p2); letter-spacing:.12em;
+}
+#oppLeft.show { display:flex; }
+
+/* conn dot */
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.dot.ok  { background:var(--green); box-shadow:0 0 6px var(--green); }
+.dot.bad { background:var(--mute); }
+.dot.wait{ background:var(--gold); box-shadow:0 0 6px var(--gold); }
+
+/* mobile: stack vertically */
+@media (max-width:600px) {
+  #arena { grid-template-columns:1fr; grid-template-rows:1fr 3px 1fr; }
+  .divider::after { content:''; }
+  #cdNum { font-size:5.5rem; }
+  #shootTxt { font-size:3rem; }
+  #vMsg { font-size:1.1rem; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- TOP BAR -->
+  <div id="topbar">
+    <div class="sc-block">
+      <span class="sc-name" id="nameP1">YOU</span>
+      <span class="sc-num p1" id="scP1">0</span>
+    </div>
+    <div class="title">ROCK · PAPER · SCISSORS</div>
+    <div class="sc-block">
+      <span class="sc-num p2" id="scP2">0</span>
+      <span class="sc-name" id="nameP2">OPP</span>
+    </div>
+  </div>
+
+  <!-- ARENA -->
+  <div id="arena">
+
+    <!-- My camera -->
+    <div class="panel" id="localPanel">
+      <video id="localVid" autoplay playsinline muted></video>
+      <canvas id="localCanvas" width="320" height="240" style="display:none"></canvas>
+      <div class="ptag p1" id="myTag">YOU</div>
+      <div class="gbadge p1 none" id="myGesture">No hand</div>
+      <div class="cbar-wrap"><div class="cbar p1" id="myBar" style="width:0%"></div></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Opponent -->
+    <div class="panel" id="remotePanel">
+      <div class="rph" id="rph">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+        <span class="pulse">Waiting for opponent…</span>
+      </div>
+      <img id="remoteImg" alt="opponent">
+      <div class="ptag p2" id="oppTag">OPPONENT</div>
+      <div class="gbadge p2 none" id="oppGesture">—</div>
+      <div class="cbar-wrap"><div class="cbar p2" id="oppBar" style="width:0%"></div></div>
+    </div>
+
+    <!-- OVERLAY -->
+    <div id="overlay">
+      <div class="obox">
+
+        <!-- LOBBY -->
+        <div id="secLobby">
+          <div class="otitle">JOIN BATTLE</div>
+          <div class="frow">
+            <label>YOUR NAME</label>
+            <input id="inpName" type="text" placeholder="e.g.  Ahmed" maxlength="20" autocomplete="off">
+          </div>
+          <div class="frow">
+            <label>ROOM ID &nbsp;<span style="color:var(--mute);font-size:.56rem">(share same ID with friend)</span></label>
+            <input id="inpRoom" type="text" placeholder="e.g.  BATTLE99" maxlength="20" autocomplete="off">
+          </div>
+          <button class="btn" id="joinBtn">CONNECT →</button>
+          <div id="errmsg"></div>
+        </div>
+
+        <!-- WAITING -->
+        <div id="secWait" style="display:none">
+          <div class="otitle pulse" id="waitTitle">WAITING FOR OPPONENT</div>
+          <div style="font-size:.68rem;color:var(--mute);letter-spacing:.08em" id="waitMsg"></div>
+        </div>
+
+        <!-- COUNTDOWN -->
+        <div id="secCd" style="display:none">
+          <div id="cdNum">3</div>
+          <div id="cdLbl">GET READY</div>
+        </div>
+
+        <!-- SHOOT -->
+        <div id="secShoot" style="display:none">
+          <div id="shootTxt">SHOOT!</div>
+        </div>
+
+        <!-- VERDICT -->
+        <div id="secVerdict" style="display:none">
+          <div id="vMsg"></div>
+          <div id="vSub"></div>
+          <button id="againBtn">▶  PLAY AGAIN</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Opponent left -->
+    <div id="oppLeft">
+      <div>⚠ Opponent disconnected</div>
+      <button class="btn" style="width:auto;padding:10px 28px" onclick="location.reload()">BACK TO LOBBY</button>
+    </div>
+
+  </div><!-- /arena -->
+
+  <!-- STATUS BAR -->
+  <div id="statusbar">
+    <span><span class="dot bad" id="connDot"></span><span id="connLbl">Not connected</span></span>
+    <span><kbd>SPACE</kbd> New round</span>
+    <span><kbd>R</kbd> Reset score</span>
+  </div>
+
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const G = {
+  socket:null, room:"", myName:"", oppName:"Opponent",
+  playerNo:1, myScore:0, oppScore:0,
+  myGesture:null, state:"lobby",
+  cdTimer:null, sendTimer:null, resultTimer:null,
+};
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+const el  = id => document.getElementById(id);
+const ovl = el("overlay");
+
+function showSec(name) {
+  // name: lobby | wait | cd | shoot | verdict | none
+  ovl.classList.remove("hidden");
+  ["secLobby","secWait","secCd","secShoot","secVerdict"].forEach(id => el(id).style.display="none");
+  if (name === "none") { ovl.classList.add("hidden"); return; }
+  const map = {lobby:"secLobby",wait:"secWait",cd:"secCd",shoot:"secShoot",verdict:"secVerdict"};
+  if (map[name]) el(map[name]).style.display = "block";
+}
+
+function setConn(s) {
+  const d = el("connDot"), l = el("connLbl");
+  if (s==="ok")  { d.className="dot ok";   l.textContent="Connected"; }
+  if (s==="bad") { d.className="dot bad";  l.textContent="Not connected"; }
+  if (s==="wait"){ d.className="dot wait"; l.textContent="Connecting…"; }
+}
+
+function updateScores() {
+  el("scP1").textContent = G.myScore;
+  el("scP2").textContent = G.oppScore;
+}
+
+function setBadge(badgeEl, barEl, gesture, conf) {
+  if (gesture) {
+    badgeEl.textContent = gesture.toUpperCase();
+    badgeEl.classList.remove("none");
+    barEl.style.width = (conf*100).toFixed(0) + "%";
+  } else {
+    badgeEl.textContent = "No hand";
+    badgeEl.classList.add("none");
+    barEl.style.width = "0%";
+  }
+}
+
+// ── Camera ─────────────────────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      { video:{ width:{ideal:640}, height:{ideal:480}, facingMode:"user" }, audio:false });
+    el("localVid").srcObject = stream;
+    return true;
+  } catch(e) {
+    el("errmsg").textContent = "⚠ Camera blocked — make sure you accepted the HTTPS warning, then reload.";
+    return false;
+  }
+}
+
+function captureFrame() {
+  const v = el("localVid"), c = el("localCanvas");
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.55);
+}
+
+// ── Socket ─────────────────────────────────────────────────────────────────────
+function initSocket() {
+  // Connect to the same host/port (HTTPS → WSS automatically)
+  const sio = io({ transports:["websocket"] });
+  G.socket = sio;
+
+  sio.on("connect",    () => setConn("ok"));
+  sio.on("disconnect", () => { setConn("bad"); stopSend(); });
+
+  sio.on("error", d => {
+    el("errmsg").textContent  = "⚠ " + d.msg;
+    el("waitMsg").textContent = "⚠ " + d.msg;
+  });
+
+  sio.on("waiting", d => {
+    G.state = "wait";
+    showSec("wait");
+    el("waitMsg").textContent = d.msg || "Waiting for opponent…";
+  });
+
+  sio.on("match_ready", d => {
+    G.oppName  = d.opponent;
+    G.playerNo = d.player_no;
+    el("myTag").textContent   = G.myName.toUpperCase();
+    el("oppTag").textContent  = G.oppName.toUpperCase();
+    el("nameP1").textContent  = G.myName.toUpperCase();
+    el("nameP2").textContent  = G.oppName.toUpperCase();
+    G.state = "idle";
+    showSec("none");
+    startSend();
+  });
+
+  sio.on("ai_result", d => {
+    G.myGesture = d.gesture;
+    setBadge(el("myGesture"), el("myBar"), d.gesture, d.conf);
+  });
+
+  sio.on("opponent_frame", d => {
+    if (d.frame) {
+      const img = el("remoteImg");
+      img.src = d.frame;
+      img.style.display = "block";
+      el("rph").style.display = "none";
+    }
+    setBadge(el("oppGesture"), el("oppBar"), d.gesture, d.conf);
+  });
+
+  sio.on("begin_countdown", d => {
+    const offset = Date.now() - d.server_ts * 1000;
+    beginCountdown(offset);
+  });
+
+  sio.on("verdict", d => showVerdict(d));
+
+  sio.on("opponent_left", () => {
+    stopSend();
+    el("oppLeft").classList.add("show");
+  });
+}
+
+// ── Frame sending ──────────────────────────────────────────────────────────────
+function startSend() {
+  if (G.sendTimer) return;
+  G.sendTimer = setInterval(() => {
+    if (!G.socket || G.state === "lobby" || G.state === "wait") return;
+    G.socket.emit("stream_frame", { room: G.room, frame: captureFrame() });
+  }, 130);
+}
+function stopSend() { clearInterval(G.sendTimer); G.sendTimer = null; }
+
+// ── Countdown ──────────────────────────────────────────────────────────────────
+function beginCountdown(offsetMs) {
+  G.state = "cd";
+  showSec("cd");
+  const start = Date.now() - Math.max(0, offsetMs);
+  if (G.cdTimer) clearInterval(G.cdTimer);
+  G.cdTimer = setInterval(() => {
+    const rem = Math.ceil((3000 - (Date.now()-start)) / 1000);
+    if (rem > 0) {
+      el("cdNum").textContent = rem;
+    } else {
+      clearInterval(G.cdTimer);
+      doShoot();
+    }
+  }, 60);
+}
+
+function doShoot() {
+  G.state = "shoot";
+  showSec("shoot");
+  G.socket.emit("submit_gesture", { room: G.room, gesture: G.myGesture });
+  setTimeout(() => {
+    if (G.state === "shoot") { G.state = "result"; showSec("verdict");
+      el("vMsg").textContent = "Waiting for server…"; el("vSub").textContent = ""; }
+  }, 2500);
+}
+
+// ── Verdict ────────────────────────────────────────────────────────────────────
+const EMJ = { rock:"🪨", paper:"📄", scissors:"✂️" };
+function ge(g) { return g ? (EMJ[g]||"")+" "+g.toUpperCase() : "???" ; }
+
+function showVerdict(d) {
+  G.state = "result";
+  const isP1 = G.playerNo === 1;
+  const myG  = isP1 ? d.g1 : d.g2;
+  const oppG = isP1 ? d.g2 : d.g1;
+  const iWin = (d.winner === G.playerNo);
+  const draw = (d.winner === 0);
+  const none = (d.winner === -1);
+
+  let msg, color;
+  if (none)       { msg="NO HANDS DETECTED"; color="var(--mute)"; }
+  else if (draw)  { msg="DRAW 🤝";            color="var(--gold)"; }
+  else if (iWin)  { msg="YOU WIN! 🎉";        color="var(--green)"; G.myScore++; }
+  else            { msg="YOU LOSE 😔";         color="var(--p2)";  G.oppScore++; }
+
+  updateScores();
+  const vm = el("vMsg"); vm.textContent = msg; vm.style.color = color;
+  el("vSub").textContent = `${G.myName}: ${ge(myG)}   vs   ${G.oppName}: ${ge(oppG)}`;
+  showSec("verdict");
+
+  if (G.resultTimer) clearTimeout(G.resultTimer);
+  G.resultTimer = setTimeout(() => {
+    if (G.state === "result") { G.state = "idle"; showSec("none"); }
+  }, 5000);
+}
+
+// ── Join button ────────────────────────────────────────────────────────────────
+el("joinBtn").addEventListener("click", async () => {
+  const name = el("inpName").value.trim();
+  const room = el("inpRoom").value.trim().toUpperCase();
+  el("errmsg").textContent = "";
+  if (!name) { el("errmsg").textContent = "Please enter your name."; return; }
+  if (!room) { el("errmsg").textContent = "Please enter a Room ID."; return; }
+
+  setConn("wait");
+  el("errmsg").textContent = "Starting camera…";
+  const ok = await startCamera();
+  if (!ok) { setConn("bad"); return; }
+
+  G.myName = name; G.room = room;
+  el("myTag").textContent  = name.toUpperCase();
+  el("nameP1").textContent = name.toUpperCase();
+
+  el("errmsg").textContent = "Connecting…";
+  initSocket();
+
+  G.socket.on("connect", () => {
+    G.socket.emit("join", { username: G.myName, room: G.room });
+    showSec("wait");
+    el("waitMsg").textContent = "Joining room…";
+  });
+});
+
+// ── Keyboard ───────────────────────────────────────────────────────────────────
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && G.state === "idle") {
+    e.preventDefault();
+    G.socket.emit("start_round", { room: G.room });
+  }
+  if ((e.key==="r"||e.key==="R") && G.state !== "lobby") {
+    G.myScore = 0; G.oppScore = 0; updateScores();
+  }
+});
+el("againBtn").addEventListener("click", () => {
+  if (G.state === "result") { G.state = "idle"; showSec("none"); }
+});
+
+// ── Init ────────────────────────────────────────────────────────────────────────
+showSec("lobby");
+</script>
+</body>
+</html>
